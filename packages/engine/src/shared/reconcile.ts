@@ -1,3 +1,4 @@
+import type { CustodyState } from "@repo/execution";
 import {
   type BroadcastIntent,
   type IntentStatus,
@@ -198,15 +199,24 @@ async function resolveSafeIntent(
 async function resolveBroadcastIntent(
   liveness: LivenessCheck,
   nonces: { latest: number; pending: number },
-  intent: BroadcastIntent
+  intent: BroadcastIntent,
+  custody?: CustodyState
 ): Promise<Resolution> {
   const { nonce, updatedAt, txHash } = intent;
   const status = await liveness.reader.getReceiptStatus(txHash);
   if (status === "success") return confirmedAs({ txHash });
   if (status === "reverted") return failedAs({ txHash, error: "reverted (reconciled)" });
-  // Everything below reasons from the signer's nonce sequence, so an intent without one — a MANUAL
-  // action broadcast from the operator's own wallet — has no further evidence to offer here.
-  if (nonce === null) return stillInFlight;
+  // Everything below reasons from the signer's nonce sequence, so an intent without one has no
+  // further evidence to offer here: a MANUAL action broadcast from the operator's own wallet, or a
+  // custodian's transaction. For the latter the custodian's word is the evidence — if it abandoned
+  // the transaction after broadcasting it (cancelled, or replaced by a cancel), no receipt is ever
+  // coming and the subject would stay blocked for good.
+  if (nonce === null) {
+    if (custody?.kind === "broadcast" && custody.abandoned) {
+      return failedAs({ txHash, error: "abandoned by custodian (reconciled)" });
+    }
+    return stillInFlight;
+  }
   // No receipt, but the signer's mined nonce has passed this one → the tx was dropped/replaced (or
   // signed-but-never-broadcast and something else took the slot).
   if (nonces.latest > nonce) {
@@ -236,13 +246,40 @@ async function resolveBroadcastIntent(
  * and let the engine's fresh simulation be the final guard. `pending > nonce`: likely in the mempool
  * — keep it live (`submitted`) so this boot does not re-drive it; a later boot resolves it once mined.
  * Otherwise it was never broadcast → `failed`, safe to re-drive.
+ *
+ * A custodian's intent has no nonce of ours to lean on, so for it `custody` is the evidence instead.
  */
 function resolveUnbroadcastIntent(
   liveness: LivenessCheck,
   nonces: { latest: number; pending: number },
-  intent: TxIntent
+  intent: TxIntent,
+  custody?: CustodyState
 ): Resolution {
   const { nonce } = intent;
+
+  // "I have no record" is only evidence once enough time has passed that a request still in flight
+  // could not explain it.
+  if (custody) {
+    switch (custody.kind) {
+      case "broadcast":
+        // The hash we never got to record. Written down so the next pass resolves it by receipt.
+        return {
+          status: "submitted",
+          meta: { txHash: custody.txHash },
+          bucket: "stillInFlight",
+          warn: `Reconcile: ${intent.action} ${intent.subject} was broadcast by the custodian as ${custody.txHash}; recorded it.`,
+        };
+      case "pending":
+        return stillInFlight;
+      case "failed":
+        return failedAs({ error: `custodian gave up: ${custody.reason} (reconciled)` });
+      case "unknown":
+        if (liveness.now() - intent.updatedAt < (liveness.graceMs ?? UNKNOWN_TX_GRACE_MS)) {
+          return stillInFlight;
+        }
+        return failedAs({ error: "custodian has no record of it (reconciled)" });
+    }
+  }
 
   // `pending` with neither nonce nor hash is an intent being signed right now: `recordIntent` writes
   // it before `signContractCall`, and `markPending` fills both in only once signing returns. A
@@ -269,6 +306,27 @@ function resolveUnbroadcastIntent(
     };
   }
   return failedAs({ error: "not broadcast (reconciled)" });
+}
+
+/**
+ * What a custodian said about an intent that carries a `custodyRef`, or `undefined` when there is
+ * nothing to ask. A failed lookup reads as `pending`: not knowing is not evidence the transaction
+ * does not exist, and `pending` keeps the intent live and asks again next pass.
+ */
+async function askCustody(
+  lookup: ((custodyRef: string) => Promise<CustodyState>) | undefined,
+  intent: TxIntent,
+  logger?: Pick<Logger, "warn">
+): Promise<CustodyState | undefined> {
+  if (!lookup || intent.custodyRef === null) return undefined;
+  try {
+    return await lookup(intent.custodyRef);
+  } catch (error) {
+    logger?.warn(
+      `Reconcile: could not ask the custodian about ${intent.action} ${intent.subject} (${intent.custodyRef}), so it stays in flight — ${error instanceof Error ? error.message : error}`
+    );
+    return { kind: "pending" };
+  }
 }
 
 /**
@@ -349,6 +407,13 @@ export async function reconcilePending(args: {
   isSending?: (id: string) => boolean;
   /** Recovers a missing relay horizon; see `Horizon`. Omitted under public submission. */
   horizon?: Pick<Horizon, "repair">;
+  /**
+   * What a custodian says about the transaction it was asked to create for an intent, by that
+   * intent's `custodyRef`. Only for custody execution, where the custodian — not this process —
+   * holds the nonce and the hash: without it, an intent whose request outlived a crash has no hash
+   * and no nonce, and is indistinguishable from one that was never sent.
+   */
+  custody?: (custodyRef: string) => Promise<CustodyState>;
 }): Promise<ReconcileSummary> {
   const { store, reader, signer, logger, graceMs, reclaimMarginBlocks, isSending } = args;
   const now = args.now ?? Date.now;
@@ -426,11 +491,12 @@ export async function reconcilePending(args: {
     // Route by what the intent carries: a Safe envelope (MANUAL `safe`), a plain tx hash
     // (AUTO/EOA), or neither (a send whose durable record never completed). `safeEnvelope` is set
     // only by the Safe claim path, so AUTO/EOA intents are never routed through the Safe resolver.
+    const custody = await askCustody(args.custody, intent, logger);
     const resolution = isSafe(intent)
       ? await resolveSafeIntent(liveness, signer, intent, logger)
       : isBroadcast(intent)
-        ? await resolveBroadcastIntent(liveness, nonces, intent)
-        : resolveUnbroadcastIntent(liveness, nonces, intent);
+        ? await resolveBroadcastIntent(liveness, nonces, intent, custody)
+        : resolveUnbroadcastIntent(liveness, nonces, intent, custody);
 
     if (resolution.status) {
       await store.transition(intent.id, resolution.status, resolution.meta, asRead(intent));

@@ -50,7 +50,7 @@ packages/  ── @repo/*, one concern each
   signer          a viem Account backed by a local key OR AWS KMS (drop-in either way)
   secrets         resolve a secret ref (an env var, or AWS Secrets Manager)
   persistence     the crash-safety StateStore — intent idempotency (Postgres / in-memory adapters)
-  runtime         the shared boot: builds the ONE Executor (AUTO/MANUAL) + risk gate a service runs on
+  runtime         the shared boot: builds the ONE Executor (AUTO/MANUAL/FIREBLOCKS) + risk gate a service runs on
   ── safety & alerts ──────────────────────────────────────────────────────────────────
   risk            pre-execution risk gate: breaker, profit floor, code-hash guard, remote kill switch
   notifications   outbound-alert seam (Slack) for risk halts + MANUAL proposals awaiting a signature
@@ -86,7 +86,7 @@ The bots' *own* on-chain code is separate and does live in this repo, under `con
 
 ## Execution modes
 
-Each bot runs in one of two modes, set by `EXECUTION_MODE` (default `AUTO`):
+Each bot runs in one of three modes, set by `EXECUTION_MODE` (default `AUTO`):
 
 - **AUTO** — the bot holds the signing key and **signs + broadcasts** transactions itself.
   This is the classic keeper. The key is a local private key or an AWS KMS key (see
@@ -96,19 +96,41 @@ Each bot runs in one of two modes, set by `EXECUTION_MODE` (default `AUTO`):
   **`operator-cli`** to `list` / `show` / `claim` / `broadcast` (or `confirm` an
   externally-signed tx). Custody is `eoa` (a plain account / hardware wallet) or `safe` (a
   Safe{Wallet} multisig), set by `MANUAL_EXECUTOR_KIND`. Nothing hot-signs in the bot process.
+- **FIREBLOCKS** — the bot is **keyless** but still sends on its own. It asks a Fireblocks vault
+  to make each contract call (`CONTRACT_CALL`); Fireblocks holds the key, picks the nonce and
+  broadcasts, and the bot waits for the hash it reports and then for the receipt, as in AUTO.
+  `FIREBLOCKS_BACKEND` selects a Fireblocks workspace (`api`: API key + RSA key) or Galaxy's
+  internal adapter (`galaxy`: a single `apikey`). **Switching between a hot wallet and Fireblocks
+  is `EXECUTION_MODE=AUTO` ↔ `FIREBLOCKS`** — see `env.*.example` for the variables.
 
-Both modes route every send through one `Executor` and one shared **nonce authority**, and
-record each action as an **intent** in the store so a crash or ambiguous send can't
-double-execute — on the next cycle the bot reconciles in-flight intents against the chain
-before re-driving. The store (`DATABASE_URL`) is optional in AUTO and **required** in MANUAL
-(the proposals must survive a restart).
+AUTO and MANUAL route every send through one `Executor` and one shared **nonce authority**;
+FIREBLOCKS has no nonce to sequence, because the custodian owns it. All three record each action
+as an **intent** in the store so a crash or ambiguous send can't double-execute — on the next
+cycle the bot reconciles in-flight intents before re-driving. The store (`DATABASE_URL`) is
+optional in AUTO and **required** in MANUAL (the proposals must survive a restart) and
+FIREBLOCKS (the bot's only record of a request is the row it wrote before making it).
+
+What FIREBLOCKS changes about crash safety: AUTO signs locally, so the tx hash exists before
+anything is broadcast and is recorded first. A custodian only reveals the hash after it has
+broadcast, so the anchor is instead a **custody ref** — the `externalTxId` the request is made
+under — written to the intent *before* the request. If the answer is lost, reconcile asks
+Fireblocks for the transaction by that ref and records its hash (or fails the intent once the
+custodian confirms it never existed). A request the custodian *refuses* (a 4xx, or a policy
+rejection) frees the subject at once; one whose fate is unknown keeps it blocked.
+
+FIREBLOCKS limits: `ARBITRAGE_FUNDING=router` needs a local key for its EIP-712 authorization
+and is refused at boot. A transaction still awaiting a human approver when
+`FIREBLOCKS_POLL_TIMEOUT_MS` expires has no hash for the risk gate to hold its spend by, so its
+slot is released as abandoned while the intent stays live — size the timeout to your approval
+policy, and keep approval automatic for this API user. The Fireblocks path has been exercised
+against a local fake of the Fireblocks API and anvil, **not** a live workspace.
 
 ## Signer & secrets
 
 Two orthogonal seams, both defaulting to local/dev:
 
 - **`SIGNER_SOURCE`** = `local` (a key read from an env ref, default) or `aws` (an AWS KMS
-  key — the key never leaves KMS). AUTO only; MANUAL holds no key.
+  key — the key never leaves KMS). AUTO only; MANUAL and FIREBLOCKS hold no key.
 - **`SECRETS_PROVIDER`** = `env` (a ref is an env-var name, default) or `aws` (a ref is an
   AWS Secrets Manager id). Resolves the signer key ref, the kill-switch token, the Slack
   webhook — so no plaintext secret is hard-wired into a service.
@@ -345,7 +367,7 @@ Assertions and timings are written to `.e2e-stress-report.json`; bot logs land i
 │   ├── signer/                     #   viem Account from a local key OR AWS KMS
 │   ├── secrets/                    #   resolve a secret ref (env OR AWS Secrets Manager)
 │   ├── persistence/                #   crash-safety StateStore — intent idempotency (Postgres / memory)
-│   ├── runtime/                    #   startRuntime: builds the one Executor (AUTO/MANUAL) + risk gate
+│   ├── runtime/                    #   startRuntime: builds the one Executor (AUTO/MANUAL/FIREBLOCKS) + risk gate
 │   ├── risk/                       #   risk gate: breaker, profit floor, code-hash guard, kill switch
 │   ├── notifications/              #   outbound alerts (Slack) — risk halts + MANUAL proposals
 │   ├── config/                     #   shared env-var schemas (zod) + fail-fast parser

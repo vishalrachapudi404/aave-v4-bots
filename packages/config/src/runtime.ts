@@ -129,8 +129,11 @@ export const runtimeEnvFields = {
    * How the service executes. `AUTO` (default) signs + broadcasts (the bot holds the key).
    * `MANUAL` is **keyless**: it persists a content-hashed proposal + notifies an operator who
    * signs with their own wallet — no private key, `WalletClient`, or nonce anywhere in the process.
+   * `FIREBLOCKS` is **keyless** too, but sends on its own: it asks a Fireblocks vault to sign and
+   * broadcast each transaction. Switching between `AUTO` and `FIREBLOCKS` is switching between a
+   * hot wallet and custody; the two are exclusive, and `FIREBLOCKS` refuses to boot beside a key.
    */
-  EXECUTION_MODE: z.enum(["AUTO", "MANUAL"]).optional().default("AUTO"),
+  EXECUTION_MODE: z.enum(["AUTO", "MANUAL", "FIREBLOCKS"]).optional().default("AUTO"),
   /**
    * The account that will broadcast the proposals — the identity whose balances/allowances the engine
    * reads and whose `from` its simulations use. An address, never a key. In `safe` custody this is the
@@ -155,6 +158,35 @@ export const runtimeEnvFields = {
    * disables the check. Default 1 hour. MANUAL only.
    */
   MANUAL_INTENT_STUCK_MS: nonNegativeIntSchema.optional().default("3600000"),
+
+  // ── FIREBLOCKS execution ─────────────────────────────────────────────────────────────────────
+  // Only meaningful under `EXECUTION_MODE=FIREBLOCKS`, where a custodian signs and broadcasts. No
+  // defaults here — `buildExecutionConfig` owns them, next to the checks that need to tell "unset"
+  // from "set to the default". Secrets are references, as for the signer: an env-var name or an AWS
+  // secret id, never the value.
+  /** `api` = a Fireblocks workspace (API key + RSA key). `galaxy` = Galaxy's adapter (one apikey). */
+  FIREBLOCKS_BACKEND: z.enum(["api", "galaxy"]).optional(),
+  /** Fireblocks API origin (`api`, default `https://api.fireblocks.io`) or the adapter host (`galaxy`). */
+  FIREBLOCKS_BASE_URL: urlSchema.optional(),
+  /** Secret ref for the API key (`api`) or the adapter's `apikey` (`galaxy`). */
+  FIREBLOCKS_API_KEY_REF: z.string().min(1).optional(),
+  /** Secret ref for the API user's RSA private key, as PEM. `api` only. */
+  FIREBLOCKS_SECRET_KEY_REF: z.string().min(1).optional(),
+  /** The vault account transactions are sent from. */
+  FIREBLOCKS_VAULT_ACCOUNT_ID: z.string().min(1).optional(),
+  /** Fireblocks' asset id for the chain's native asset (`ETH`, `ETH_TEST5`, …). It selects the network. */
+  FIREBLOCKS_ASSET_ID: z.string().min(1).optional(),
+  /** The vault's address on this chain. When set it must match what Fireblocks reports. */
+  FIREBLOCKS_VAULT_ADDRESS: addressSchema.optional(),
+  /** Fireblocks' fee level for each transaction. Default `MEDIUM`. */
+  FIREBLOCKS_FEE_LEVEL: z.enum(["LOW", "MEDIUM", "HIGH"]).optional(),
+  /** How often to ask for a hash, in ms. Default 2000. */
+  FIREBLOCKS_POLL_INTERVAL_MS: intInRangeSchema(100, 60_000).optional(),
+  /**
+   * How long to wait for a hash, in ms. Default 120000. It has to outlast the workspace's approval
+   * policy: a transaction awaiting a human approver has no hash yet.
+   */
+  FIREBLOCKS_POLL_TIMEOUT_MS: intInRangeSchema(1_000, 3_600_000).optional(),
 } as const;
 
 /** The env shape the builders below consume. */
@@ -173,7 +205,7 @@ export interface RuntimeEnv {
  * builder's callers to supply signer fields.
  */
 export interface ExecutionEnv extends SubmitterEnv {
-  EXECUTION_MODE: "AUTO" | "MANUAL";
+  EXECUTION_MODE: "AUTO" | "MANUAL" | "FIREBLOCKS";
   // Address vars stay `string` here — the `addressSchema` regex validates the format but zod infers
   // `string`; `buildExecutionConfig` narrows to `Hex40` on the way out.
   MANUAL_EXECUTOR_ADDRESS?: string;
@@ -185,6 +217,17 @@ export interface ExecutionEnv extends SubmitterEnv {
   SIGNER_KEY_REF?: string;
   KMS_KEY_ID?: string;
   SIGNER_ADDRESS?: string;
+  // Fireblocks. Optional here, defaulted by `buildFireblocksSettings`: the defaults live in one place.
+  FIREBLOCKS_BACKEND?: "api" | "galaxy";
+  FIREBLOCKS_BASE_URL?: string;
+  FIREBLOCKS_API_KEY_REF?: string;
+  FIREBLOCKS_SECRET_KEY_REF?: string;
+  FIREBLOCKS_VAULT_ACCOUNT_ID?: string;
+  FIREBLOCKS_ASSET_ID?: string;
+  FIREBLOCKS_VAULT_ADDRESS?: string;
+  FIREBLOCKS_FEE_LEVEL?: "LOW" | "MEDIUM" | "HIGH";
+  FIREBLOCKS_POLL_INTERVAL_MS?: string;
+  FIREBLOCKS_POLL_TIMEOUT_MS?: string;
 }
 
 /**
@@ -213,7 +256,38 @@ export type ExecutionSettings =
       intentTtlMs: number;
       /** Alert (`intent-stuck`) on a claimed/submitted intent older than this many ms (`0` disables). */
       intentStuckMs: number;
-    };
+    }
+  | { mode: "FIREBLOCKS"; fireblocks: FireblocksSettings };
+
+/**
+ * How the bot reaches Fireblocks. Secrets are *references* (an env-var name or an AWS secret id),
+ * resolved at boot through `@repo/secrets` like the signing key and the Slack webhook — the key
+ * material itself never appears in `Config`.
+ *
+ * Nested in its own arm, not on `AUTO`: `submitter` is meaningless here (Fireblocks broadcasts), and
+ * nothing about it may be readable from a mode that has no key.
+ */
+export interface FireblocksSettings {
+  /**
+   * `api` talks to a Fireblocks workspace with an API key + RSA key. `galaxy` talks to Galaxy's
+   * adapter, which holds those and takes a single `apikey`.
+   */
+  backend: "api" | "galaxy";
+  baseUrl: string;
+  /** The API key (`api`) or the adapter's `apikey` (`galaxy`). */
+  apiKeyRef: string;
+  /** The API user's RSA private key (PEM). `api` only. */
+  secretKeyRef?: string;
+  vaultAccountId: string;
+  /** Fireblocks' id for the chain's native asset — it selects the network. */
+  assetId: string;
+  /** Checked against the address Fireblocks reports for the vault, when set. */
+  vaultAddress?: Hex40;
+  feeLevel: "LOW" | "MEDIUM" | "HIGH";
+  pollIntervalMs: number;
+  /** How long to wait for a hash — long enough to cover the workspace's approval policy. */
+  pollTimeoutMs: number;
+}
 
 // `NotifierSettings` is owned by `@repo/notifications` (the consumer, `buildNotifier`), imported above
 // and re-exported here so a service reads it off `@repo/config` like every other boot-plan type. One
@@ -382,16 +456,19 @@ export function buildPersistenceConfig(env: RuntimeEnv): PersistenceConfig | und
 }
 
 /**
- * Project the execution-mode env into a service's boot plan, failing fast on a MANUAL setup that
- * cannot honor its own contract. MANUAL is keyless and durable, so it **requires** the broadcasting
- * address and a `StateStore`, and it **must not** carry a signing key — a MANUAL bot that resolved
- * one would break the property the mode exists for (no hot key to steal). AUTO is unchanged.
+ * Project the execution-mode env into a service's boot plan, failing fast on a setup that cannot
+ * honor its own contract.
+ *
+ * MANUAL and FIREBLOCKS are keyless: the bot signs nothing, so neither may carry a signing key — a
+ * process that resolved one would break the property the mode exists for (no hot key to steal).
+ * Both are also durable: they **require** a `StateStore`, because what the bot knows about a
+ * transaction it did not sign comes from the store. AUTO is unchanged.
  *
  * `opts.signerKeyPresent` is whether the service's signing-key env var actually holds a value (the
  * service knows its own key-ref name, e.g. `LIQUIDATOR_PRIVATE_KEY`, so it computes this and passes
- * it in). It closes the gap the schema-field checks below cannot see: a MANUAL deployment that never
- * sets an explicit signer var but leaves the raw key in the process env — which a compromised MANUAL
- * process could still read and exfiltrate, defeating "no hot key to steal".
+ * it in). It closes the gap the schema-field checks below cannot see: a keyless deployment that never
+ * sets an explicit signer var but leaves the raw key in the process env — which a compromised process
+ * could still read and exfiltrate, defeating "no hot key to steal".
  */
 export function buildExecutionConfig(
   env: ExecutionEnv,
@@ -401,14 +478,14 @@ export function buildExecutionConfig(
     return { mode: "AUTO", submitter: buildSubmitterConfig(env) };
   }
 
-  // Relay variables under MANUAL are the same category of mistake as signer variables below: the
-  // process would boot, the operator would believe their transactions were protected, and in fact
-  // this bot broadcasts nothing at all — their own wallet does, in public.
+  // Relay variables under a keyless mode are the same category of mistake as signer variables below:
+  // the process would boot, the operator would believe their transactions were protected, and in
+  // fact this bot submits nothing to a relay — an operator's wallet, or the custodian, broadcasts.
   //
-  // Checked on the variables themselves and not only on `SUBMITTER`, because MANUAL never reaches
-  // `buildSubmitterConfig`, which is what rejects a stray relay variable everywhere else. Left to
-  // that check alone, a relay URL and a fee floor beside `EXECUTION_MODE=MANUAL` would boot in
-  // silence — the one arrangement where nothing downstream ever touches them again.
+  // Checked on the variables themselves and not only on `SUBMITTER`, because a keyless mode never
+  // reaches `buildSubmitterConfig`, which is what rejects a stray relay variable everywhere else.
+  // Left to that check alone, a relay URL and a fee floor beside `EXECUTION_MODE=MANUAL` would boot
+  // in silence — the one arrangement where nothing downstream ever touches them again.
   const strayRelay = [
     env.SUBMITTER === "flashbots-protect" ? "SUBMITTER=flashbots-protect" : undefined,
     ...relayOnlyVars(env)
@@ -416,32 +493,28 @@ export function buildExecutionConfig(
       .map(([name]) => name),
   ].filter((v): v is string => v !== undefined);
   if (strayRelay.length > 0) {
+    const who =
+      env.EXECUTION_MODE === "MANUAL"
+        ? "does not broadcast — an operator signs and sends with their own wallet"
+        : "does not broadcast to a relay — the custodian signs and sends the transaction itself";
     throw new Error(
-      `EXECUTION_MODE=MANUAL does not broadcast — an operator signs and sends with their own wallet, so ${strayRelay.join(", ")} protects nothing and this bot cannot enforce it. Unset ${strayRelay.length === 1 ? "it" : "them"}, or run AUTO.`
+      `EXECUTION_MODE=${env.EXECUTION_MODE} ${who}, so ${strayRelay.join(", ")} protects nothing and this bot cannot enforce it. Unset ${strayRelay.length === 1 ? "it" : "them"}, or run AUTO.`
     );
   }
 
-  if (!env.MANUAL_EXECUTOR_ADDRESS) {
-    throw new Error(
-      "EXECUTION_MODE=MANUAL requires MANUAL_EXECUTOR_ADDRESS (the EOA that will broadcast)"
-    );
-  }
   if (!env.DATABASE_URL) {
-    throw new Error("EXECUTION_MODE=MANUAL requires DATABASE_URL — proposals must be persisted");
-  }
-  // Required, no default: the custody model changes how a proposal is broadcast AND how it is
-  // confirmed, so a silent `eoa` default would mis-confirm a Safe deployment (its `execTransaction`
-  // succeeds even when the inner call reverts). Make the operator declare it.
-  if (!env.MANUAL_EXECUTOR_KIND) {
     throw new Error(
-      "EXECUTION_MODE=MANUAL requires MANUAL_EXECUTOR_KIND (eoa | safe) — the operator's custody model"
+      env.EXECUTION_MODE === "MANUAL"
+        ? "EXECUTION_MODE=MANUAL requires DATABASE_URL — proposals must be persisted"
+        : "EXECUTION_MODE=FIREBLOCKS requires DATABASE_URL — without a record of the request made to the custodian, a crash or a lost response leaves a transaction nothing can find"
     );
   }
-  // We promised a MANUAL process holds no key: reject an explicitly configured signer, AND the raw
+
+  // We promised a keyless process holds no key: reject an explicitly configured signer, AND the raw
   // key material sitting in the env, rather than silently ignore either — so a mis-set deployment
   // stops at boot instead of running with a live key it did not expect to. (The composition root
-  // also never calls `resolveSigner` in MANUAL, so the key is never loaded into a signer object;
-  // this is the defense-in-depth that keeps it out of the process env entirely.)
+  // also never calls `resolveSigner` in a keyless mode, so the key is never loaded into a signer
+  // object; this is the defense-in-depth that keeps it out of the process env entirely.)
   const signerVars = [
     env.SIGNER_SOURCE === "aws" && "SIGNER_SOURCE=aws",
     env.SIGNER_KEY_REF && "SIGNER_KEY_REF",
@@ -451,7 +524,25 @@ export function buildExecutionConfig(
   ].filter((v): v is string => Boolean(v));
   if (signerVars.length > 0) {
     throw new Error(
-      `EXECUTION_MODE=MANUAL is keyless and must hold no signing key — unset ${signerVars.join(", ")}`
+      `EXECUTION_MODE=${env.EXECUTION_MODE} is keyless and must hold no signing key — unset ${signerVars.join(", ")}`
+    );
+  }
+
+  if (env.EXECUTION_MODE === "FIREBLOCKS") {
+    return { mode: "FIREBLOCKS", fireblocks: buildFireblocksSettings(env) };
+  }
+
+  if (!env.MANUAL_EXECUTOR_ADDRESS) {
+    throw new Error(
+      "EXECUTION_MODE=MANUAL requires MANUAL_EXECUTOR_ADDRESS (the EOA that will broadcast)"
+    );
+  }
+  // Required, no default: the custody model changes how a proposal is broadcast AND how it is
+  // confirmed, so a silent `eoa` default would mis-confirm a Safe deployment (its `execTransaction`
+  // succeeds even when the inner call reverts). Make the operator declare it.
+  if (!env.MANUAL_EXECUTOR_KIND) {
+    throw new Error(
+      "EXECUTION_MODE=MANUAL requires MANUAL_EXECUTOR_KIND (eoa | safe) — the operator's custody model"
     );
   }
 
@@ -461,5 +552,54 @@ export function buildExecutionConfig(
     executorKind: env.MANUAL_EXECUTOR_KIND,
     intentTtlMs: Number.parseInt(env.MANUAL_INTENT_TTL_MS, 10),
     intentStuckMs: Number.parseInt(env.MANUAL_INTENT_STUCK_MS, 10),
+  };
+}
+
+const DEFAULT_FIREBLOCKS_API_URL = "https://api.fireblocks.io";
+
+/**
+ * Project the Fireblocks env into its boot plan, refusing every combination that would boot and then
+ * send somewhere other than where the operator believes. Every Fireblocks variable is optional in the
+ * schema because it means nothing outside FIREBLOCKS mode; the ones the mode cannot run without are
+ * required here.
+ */
+function buildFireblocksSettings(env: ExecutionEnv): FireblocksSettings {
+  const backend = env.FIREBLOCKS_BACKEND ?? "api";
+  const missing = [
+    !env.FIREBLOCKS_API_KEY_REF && "FIREBLOCKS_API_KEY_REF",
+    !env.FIREBLOCKS_VAULT_ACCOUNT_ID && "FIREBLOCKS_VAULT_ACCOUNT_ID",
+    // No default: the asset id picks the network the transaction is broadcast on, and one that is
+    // right for mainnet is a different chain's asset elsewhere.
+    !env.FIREBLOCKS_ASSET_ID && "FIREBLOCKS_ASSET_ID",
+    backend === "api" && !env.FIREBLOCKS_SECRET_KEY_REF && "FIREBLOCKS_SECRET_KEY_REF",
+    // Galaxy's adapter has no public host, so there is nothing safe to default to.
+    backend === "galaxy" && !env.FIREBLOCKS_BASE_URL && "FIREBLOCKS_BASE_URL",
+  ].filter((v): v is string => Boolean(v));
+  if (missing.length > 0) {
+    throw new Error(
+      `EXECUTION_MODE=FIREBLOCKS (backend ${backend}) requires ${missing.join(", ")}`
+    );
+  }
+  // The adapter signs the Fireblocks JWT itself, so the RSA key must not be here: holding it would
+  // mean this process could talk to Fireblocks directly, which is exactly what the adapter is for.
+  if (backend === "galaxy" && env.FIREBLOCKS_SECRET_KEY_REF) {
+    throw new Error(
+      "FIREBLOCKS_BACKEND=galaxy authenticates with the adapter's apikey alone — unset FIREBLOCKS_SECRET_KEY_REF"
+    );
+  }
+
+  return {
+    backend,
+    baseUrl: env.FIREBLOCKS_BASE_URL ?? DEFAULT_FIREBLOCKS_API_URL,
+    apiKeyRef: env.FIREBLOCKS_API_KEY_REF as string,
+    ...(env.FIREBLOCKS_SECRET_KEY_REF ? { secretKeyRef: env.FIREBLOCKS_SECRET_KEY_REF } : {}),
+    vaultAccountId: env.FIREBLOCKS_VAULT_ACCOUNT_ID as string,
+    assetId: env.FIREBLOCKS_ASSET_ID as string,
+    ...(env.FIREBLOCKS_VAULT_ADDRESS
+      ? { vaultAddress: env.FIREBLOCKS_VAULT_ADDRESS as Hex40 }
+      : {}),
+    feeLevel: env.FIREBLOCKS_FEE_LEVEL ?? "MEDIUM",
+    pollIntervalMs: Number.parseInt(env.FIREBLOCKS_POLL_INTERVAL_MS ?? "2000", 10),
+    pollTimeoutMs: Number.parseInt(env.FIREBLOCKS_POLL_TIMEOUT_MS ?? "120000", 10),
   };
 }

@@ -79,6 +79,7 @@ export function createMemoryStateStore(now: () => number = Date.now): MemoryStat
       txHash: null,
       error: null,
       relayMaxBlock: null,
+      custodyRef: null,
       // Copy on store too: the caller must not be able to mutate the payload after proposing.
       payload: payload === null ? null : { ...payload },
       payloadHash,
@@ -194,6 +195,7 @@ export function createMemoryStateStore(now: () => number = Date.now): MemoryStat
       // The row must still be the one the caller observed — see `StateStore.transition`.
       if (expect?.updatedAt !== undefined && row.updatedAt !== expect.updatedAt) return false;
       if (expect?.txHash !== undefined && row.txHash !== expect.txHash) return false;
+      if (expect?.custodyRef !== undefined && row.custodyRef !== expect.custodyRef) return false;
       if (expect?.status !== undefined && !expect.status.includes(row.status)) return false;
       rows.set(id, {
         ...row,
@@ -202,6 +204,8 @@ export function createMemoryStateStore(now: () => number = Date.now): MemoryStat
         txHash: meta?.txHash ?? row.txHash,
         error: meta?.error ?? row.error,
         relayMaxBlock: maxHorizon(row.relayMaxBlock, meta?.relayMaxBlock),
+        // First write wins, as `COALESCE(custody_ref, …)` does in Postgres.
+        custodyRef: row.custodyRef ?? meta?.custodyRef ?? null,
         updatedAt: now(),
       });
       return true;

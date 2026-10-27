@@ -169,7 +169,20 @@ export interface ManualExecutor extends BaseExecutor {
   readonly mode: "MANUAL";
 }
 
-export type Executor = AutoExecutor | ManualExecutor;
+/**
+ * FIREBLOCKS — a custodian signs and broadcasts. Like MANUAL it holds no key and sequences no nonce
+ * (`resyncNonces` is a no-op: the custodian owns the nonce); like AUTO it sends on its own, so a
+ * `commit` ends in `broadcast` with the hash the custodian reports.
+ *
+ * There is no `account`: the signature a router-funded acquisition needs is an EIP-712 signature
+ * over typed data, which this transport does not produce. Callers that need one gate on
+ * `mode === "AUTO"`.
+ */
+export interface FireblocksExecutor extends BaseExecutor {
+  readonly mode: "FIREBLOCKS";
+}
+
+export type Executor = AutoExecutor | ManualExecutor | FireblocksExecutor;
 
 /**
  * AUTO executor: signs and broadcasts. Wraps the existing `CrashSafety` (intent idempotency + the

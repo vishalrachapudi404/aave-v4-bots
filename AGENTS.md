@@ -98,6 +98,12 @@ content-hashed proposal for `operator-cli` to sign (MANUAL). Engines hold an `Ex
 raw signer. `commit()` deliberately does **not** settle the risk slot — the engine owns that on
 every exit path.
 
+A third arm, `FIREBLOCKS` (`createFireblocksExecutor`), asks a custodian to sign and broadcast, so
+there is no nonce and no pre-broadcast hash. Its crash-safety anchor is `TxIntent.custodyRef` (the
+`externalTxId`), written *before* the request; `reconcilePending`'s `custody` lookup resolves rows
+that never learned a hash. A custodian *refusing* a request (`CustodyRejectedError`) frees the
+subject; an unknown outcome must keep it blocked — same direction-of-error rule as the risk gate.
+
 **Engine cycle shape.** Both engines: reconcile in-flight intents against the chain → resync
 nonces → publish token balances to the gate → fetch candidates → *send all* → batch-wait every
 receipt with `Promise.allSettled` → classify and settle. Sending and receipt-waiting are separate

@@ -28,19 +28,22 @@ export {
 } from "./arbitrage/engine";
 export type { EscrowedVault } from "./arbitrage/types";
 
-// The package's execution surface: the `Executor` seam plus the two factories the composition root
-// (`@repo/runtime`) builds — an `AutoExecutor` from a wallet, or a keyless `ManualExecutor`. The
-// lower-level `createAutoExecutor` (over a hand-built `CrashSafety` + `TxSender`) stays internal to
-// the package — only its own unit tests use it, importing it directly from `./executor`.
+// The package's execution surface: the `Executor` seam plus the three factories the composition
+// root (`@repo/runtime`) builds — an `AutoExecutor` from a wallet, a keyless `ManualExecutor`, or a
+// `FireblocksExecutor` over a custodian. The lower-level `createAutoExecutor` (over a hand-built
+// `CrashSafety` + `TxSender`) stays internal to the package — only its own unit tests use it,
+// importing it directly from `./executor`.
 export {
   type AutoExecutor,
   type CommitResult,
   type Executor,
+  type FireblocksExecutor,
   type ManualExecutor,
   type Submission,
   createAutoExecutorFromWallet,
   createManualExecutor,
 } from "./shared/executor";
+export { type FireblocksExecutorDeps, createFireblocksExecutor } from "./shared/fireblocksExecutor";
 // Liveness for privately-submitted transactions. Exported because the composition root is where the
 // submission choice is made, and this reader has to be built from the same decision — wiring the
 // submitter without it is what turns MEV protection into nonce reuse.

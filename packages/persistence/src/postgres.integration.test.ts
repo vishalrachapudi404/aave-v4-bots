@@ -364,4 +364,35 @@ describe.runIf(!!DATABASE_URL)("createPostgresStateStore (integration — real P
     },
     TIMEOUT
   );
+
+  // `custody_ref` is a TEXT column joined to the `$11`/`$12` parameters by position, so a mismatch
+  // in either direction silently writes the wrong column or guards on nothing. The memory model
+  // cannot catch that.
+  it(
+    "records the custody ref once, guards on it, and clears it on revival",
+    async () => {
+      const first = await store.recordIntent(input("pos-custody"));
+      if (!first.recorded) throw new Error("expected a fresh claim");
+      const key = first.id;
+
+      expect(
+        await store.transition(
+          key,
+          "pending",
+          { custodyRef: "ref-1" },
+          { updatedAt: first.attemptAt }
+        )
+      ).toBe(true);
+      await store.transition(key, "submitted", { custodyRef: "ref-2", txHash: "0xaaa" as Hex });
+      expect((await store.getIntent(key))?.custodyRef).toBe("ref-1");
+
+      expect(await store.transition(key, "failed", {}, { custodyRef: "stale" })).toBe(false);
+      expect((await store.getIntent(key))?.status).toBe("submitted");
+      expect(await store.transition(key, "failed", {}, { custodyRef: "ref-1" })).toBe(true);
+
+      await store.recordIntent(input("pos-custody"));
+      expect((await store.getIntent(key))?.custodyRef).toBeNull();
+    },
+    TIMEOUT
+  );
 });
