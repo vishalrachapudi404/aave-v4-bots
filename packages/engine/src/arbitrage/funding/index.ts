@@ -24,7 +24,7 @@ export function createArbitrageFunding(context: FundingContext): ArbitrageFundin
   const { executor, vaultKeeperAddress } = context;
   if (executor.mode !== "AUTO") {
     throw new Error(
-      "ARBITRAGE_FUNDING=router needs a key to authorize each acquisition, so it cannot run with EXECUTION_MODE=MANUAL."
+      `ARBITRAGE_FUNDING=router needs a local signing key to produce the EIP-712 authorization for each acquisition, so it cannot run with EXECUTION_MODE=${executor.mode}.`
     );
   }
   if (!vaultKeeperAddress) {

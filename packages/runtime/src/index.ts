@@ -11,16 +11,19 @@ import {
   type Submission,
   createAutoExecutorFromWallet,
   createChainReader,
+  createFireblocksExecutor,
   createManualExecutor,
   createRelayAwareReader,
   createRelayHorizon,
 } from "@repo/engine";
 import {
   PreBroadcastError,
+  createFireblocksClient,
   createFlashbotsProtectSubmitter,
   createNonceAllocator,
   createNonceLease,
   describeEndpoint,
+  normalizePem,
 } from "@repo/execution";
 import type { Logger } from "@repo/logger";
 import { type Notifier, buildNotifier, riskEventSink } from "@repo/notifications";
@@ -331,7 +334,8 @@ async function assertCustody(
 /**
  * Build the process's single `Executor` from the execution mode. AUTO resolves the signing key and
  * builds the wallet + shared nonce authority (seeded from the chain before any send); MANUAL builds a
- * keyless proposer that holds no key, wallet, or nonce at all.
+ * keyless proposer that holds no key, wallet, or nonce at all; FIREBLOCKS builds a keyless sender that
+ * asks a Fireblocks vault to sign and broadcast.
  */
 async function buildExecutor(
   config: BootConfig,
@@ -369,6 +373,52 @@ async function buildExecutor(
       logger,
       intentTtlMs: config.execution.intentTtlMs,
       intentStuckMs: config.execution.intentStuckMs,
+    });
+  }
+
+  if (config.execution.mode === "FIREBLOCKS") {
+    // Keyless like MANUAL, so the same rule: no signer is resolved, and no key or nonce exists here.
+    // `buildExecutionConfig` already rejects this mode without a store.
+    if (!store) throw new Error("FIREBLOCKS execution requires a StateStore (DATABASE_URL)");
+    const fb = config.execution.fireblocks;
+    const apiKey = await secrets.get(fb.apiKeyRef, "FIREBLOCKS_API_KEY_REF");
+    let auth: Parameters<typeof createFireblocksClient>[0]["auth"];
+    if (fb.backend === "galaxy") {
+      auth = { kind: "galaxy", apiKey };
+    } else {
+      if (!fb.secretKeyRef)
+        throw new Error("FIREBLOCKS_BACKEND=api requires FIREBLOCKS_SECRET_KEY_REF");
+      auth = {
+        kind: "api",
+        apiKey,
+        privateKey: normalizePem(await secrets.get(fb.secretKeyRef, "FIREBLOCKS_SECRET_KEY_REF")),
+      };
+    }
+    // Reads the vault's address from Fireblocks and checks it against `vaultAddress` when one is
+    // configured, so a wrong vault id stops the boot instead of spending another account's balance.
+    const client = await createFireblocksClient({
+      auth,
+      baseUrl: fb.baseUrl,
+      vaultAccountId: fb.vaultAccountId,
+      assetId: fb.assetId,
+      feeLevel: fb.feeLevel,
+      expectedAddress: fb.vaultAddress,
+    });
+    // Before anything reads or writes the store: the schema belongs to one account, and the vault
+    // address is the identity every balance, allowance and reconcile read below is keyed on.
+    await store.bindExecutionIdentity({ chainId: chain.id, address: client.address });
+    logger.info(
+      `Execution mode: FIREBLOCKS (${fb.backend}) — vault ${fb.vaultAccountId} ${fb.assetId} sending from ${client.address} (keyless)`
+    );
+    return createFireblocksExecutor({
+      store,
+      publicClient,
+      client,
+      chainId: chain.id,
+      txReceiptTimeoutMs: config.txReceiptTimeoutMs,
+      poll: { intervalMs: fb.pollIntervalMs, timeoutMs: fb.pollTimeoutMs },
+      assertCanBroadcast,
+      logger,
     });
   }
 

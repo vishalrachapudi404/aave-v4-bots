@@ -134,6 +134,12 @@ export interface TxIntent extends IntentInput {
   error: string | null;
   /** See `TransitionMeta.relayMaxBlock`. `null` for anything not privately submitted. */
   relayMaxBlock: number | null;
+  /**
+   * The key a custodian was asked to create this intent's transaction under (its `externalTxId`),
+   * recorded before the request is made. `null` for anything the bot signed itself or proposed.
+   * It is what reconcile asks the custodian about when the request's answer was lost.
+   */
+  custodyRef: string | null;
   /** The proposed transaction, for a MANUAL intent; `null` for an AUTO one. */
   payload: ProposedTx | null;
   /**
@@ -195,6 +201,8 @@ export interface TransitionExpectation {
   updatedAt?: number;
   /** Only write if the row still carries this hash — i.e. it is still the attempt observed. */
   txHash?: Hex;
+  /** Only write if the row still carries this custody ref — i.e. it is still the attempt observed. */
+  custodyRef?: string;
   /** Only write if the row is still in one of these statuses. */
   status?: readonly IntentStatus[];
 }
@@ -209,6 +217,8 @@ export interface TransitionMeta {
    * from the declared relay window. Only this releases a privately-submitted nonce.
    */
   relayMaxBlock?: number;
+  /** See `TxIntent.custodyRef`. Set once and never replaced, so it names the first request made. */
+  custodyRef?: string;
 }
 
 /**

@@ -619,3 +619,42 @@ describe("relay horizon is monotonic (memory model)", () => {
     expect(store.get(id)?.relayMaxBlock).toBeNull();
   });
 });
+
+// The custody ref is what reconcile asks a custodian about, so it must name the attempt that made
+// the request — never a later one, and never a previous one.
+describe("custody ref (memory model)", () => {
+  async function claimed() {
+    const store = createMemoryStateStore();
+    const id = idempotencyKey(input("p"));
+    await store.recordIntent(input("p"));
+    return { store, id };
+  }
+
+  it("is recorded once and never replaced by a later writer", async () => {
+    const { store, id } = await claimed();
+
+    await store.transition(id, "pending", { custodyRef: "ref-1" });
+    await store.transition(id, "submitted", { custodyRef: "ref-2" });
+
+    expect(store.get(id)?.custodyRef).toBe("ref-1");
+  });
+
+  it("binds a write to the attempt that holds the ref", async () => {
+    const { store, id } = await claimed();
+    await store.transition(id, "pending", { custodyRef: "ref-1" });
+
+    expect(await store.transition(id, "failed", {}, { custodyRef: "stale" })).toBe(false);
+    expect(store.get(id)?.status).toBe("pending");
+    expect(await store.transition(id, "failed", {}, { custodyRef: "ref-1" })).toBe(true);
+  });
+
+  it("is cleared when the row is revived, so a stale ref cannot be asked about", async () => {
+    const { store, id } = await claimed();
+    await store.transition(id, "pending", { custodyRef: "ref-1" });
+    await store.transition(id, "failed", { error: "x" });
+
+    await store.recordIntent(input("p"));
+
+    expect(store.get(id)?.custodyRef).toBeNull();
+  });
+});

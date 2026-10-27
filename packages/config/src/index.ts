@@ -28,6 +28,7 @@ export {
 
 export {
   type ExecutionSettings,
+  type FireblocksSettings,
   type NotifierSettings,
   type SubmitterSettings,
   buildExecutionConfig,
