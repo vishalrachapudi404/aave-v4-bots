@@ -330,3 +330,19 @@ Runbooks to write with the prod PR:
 - **One indexer re-backfill per image bump.** A bot-only change under shared `packages/*` also changes the Ponder schema hash.
 - **Single prod worker node.** A drain means a signer outage. Acceptable: crash-safety comes from persisted intents and reconcile.
 - **The adapter's co-signer state is in memory.** An adapter restart rejects in-flight txs; the bot recovers via `externalTxId`.
+
+## Update 2026-11-17: capacity (live kuration data + repo analysis)
+- Live `kubectl top -n kuration`: dev 7 pods ≈ 8m CPU / 520Mi; prod 6 pods ≈ 10m / 410Mi. Our team is a negligible share of either cluster. Dask and the shared add-ons drive the cluster size. Our account has no cluster-scope node read.
+- Sizing (replaces §3.6 quota numbers):
+
+  | Pod | Requests | Limits |
+  |---|---|---|
+  | indexer | 500m / 1Gi | 2 CPU / 4Gi (backfill burst) |
+  | bot | 100m / 256Mi | 1 CPU / 1Gi |
+
+  emptyDir `sizeLimit`: `.ponder` 1Gi, `/tmp` 256Mi.
+- Dev: fits easily (est. 12–18 vCPU headroom on `workers`; workers desired=max=3).
+- Prod: CPU on the single `workers` node is tight (est. −0.6 to +1.3 vCPU free). The ~0.6 vCPU of requests likely fits. If the autoscaler adds a node, set `desired_size: 2` in terraform `eks/clusters/config.yaml`, or the next apply drains it.
+- Set `nodeSelector: eks.amazonaws.com/nodegroup: workers` on both pods: the dask groups are untainted, and kuration pods already appear spread across non-worker nodes.
+- Dev has Zesty: live kuration requests are 10m vs 100m in git, so Zesty appears to rewrite requests despite its README. Exclude `aave-arbitrageur` in Zesty if fixed requests matter.
+- Do not copy kuration's LimitRange (its 1-CPU container max blocks the indexer limit). Write a namespace quota sized from the table above.
