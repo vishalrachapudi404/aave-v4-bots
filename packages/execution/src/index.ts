@@ -7,6 +7,8 @@
 //   ./submission  WHERE a signed tx goes: the `Submitter` port + its adapters (`./submission/flashbots`)
 //   ./safe        Safe{Wallet} `execTransaction` primitives — a separate concern, used by MANUAL
 //                 `safe` custody (operator-cli signs with them; reconcile reads the events back)
+//   ./custody     a custodian that signs and broadcasts for us: the `CustodyClient` port + its
+//                 Fireblocks adapter (`./custody/fireblocks`). The inverse of `./txSender`.
 
 export * from "./nonce";
 export * from "./txSender";
@@ -14,3 +16,5 @@ export * from "./receipt";
 export * from "./submission";
 export * from "./submission/flashbots";
 export * from "./safe";
+export * from "./custody";
+export * from "./custody/fireblocks";

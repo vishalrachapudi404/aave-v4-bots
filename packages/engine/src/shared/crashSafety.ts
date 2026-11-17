@@ -1,4 +1,4 @@
-import type { NonceAllocator } from "@repo/execution";
+import type { CustodyState, NonceAllocator } from "@repo/execution";
 import type { Logger } from "@repo/logger";
 import {
   type IntentInput,
@@ -44,6 +44,8 @@ export interface CrashSafetyConfig {
   reclaimMarginBlocks?: number;
   /** Recovers a missing relay horizon; see `Horizon`. Set together with `reclaimMarginBlocks`. */
   horizon?: Pick<Horizon, "repair">;
+  /** Asks a custodian about a `custodyRef`; see `reconcilePending`. Set only for custody execution. */
+  custody?: (custodyRef: string) => Promise<CustodyState>;
   /** The sending address whose nonce sequence anchors reconcile's "was this broadcast?" checks. */
   signer: Address;
   logger: Logger;
@@ -124,6 +126,14 @@ export interface CrashSafety {
    */
   markPending(id: string, nonce: number, attemptAt: number, txHash?: Hex): Promise<void>;
 
+  /**
+   * Persist the `custodyRef` a custodian will be asked to create this intent's transaction under,
+   * **before** asking. It is the custody path's `markPending`: the only thing that lets reconcile
+   * find the custodian's transaction if the answer to the request is lost. Like `markPending`, it
+   * propagates a failure — an unrecorded ref means a transaction no one can find — including the
+   * write being refused because the row was revived as another attempt. No-op without a store.
+   */
+  markCustody(id: string, custodyRef: string, attemptAt: number): Promise<void>;
   /**
    * Intent transition that must not throw — a bookkeeping failure is logged, never propagated
    * (the on-chain tx is the source of truth; reconcile resolves any drift). No-op without a store.
@@ -234,6 +244,7 @@ export function createCrashSafety(config: CrashSafetyConfig): CrashSafety {
         reclaimMarginBlocks: config.reclaimMarginBlocks,
         horizon: config.horizon,
         isSending: (id) => sending.has(id),
+        custody: config.custody,
       });
     },
 
@@ -300,6 +311,21 @@ export function createCrashSafety(config: CrashSafetyConfig): CrashSafety {
       if (!applied) {
         throw new Error(
           `intent ${id} is no longer the attempt this send claimed — refusing to broadcast at nonce ${nonce}. Another reconcile resolved it and the row was revived for a new attempt; this transaction's nonce and hash would be recorded against that one.`
+        );
+      }
+    },
+
+    async markCustody(id, custodyRef, attemptAt) {
+      if (!store) return;
+      const applied = await store.transition(
+        id,
+        "pending",
+        { custodyRef },
+        { updatedAt: attemptAt }
+      );
+      if (!applied) {
+        throw new Error(
+          `intent ${id} is no longer the attempt this send claimed — refusing to ask the custodian to send it. Another reconcile resolved it and the row was revived for a new attempt; the custodian's transaction would be recorded against that one.`
         );
       }
     },

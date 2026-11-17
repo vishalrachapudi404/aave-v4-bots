@@ -321,3 +321,110 @@ describe("buildExecutionConfig", () => {
     });
   });
 });
+
+describe("buildExecutionConfig — FIREBLOCKS", () => {
+  const base = {
+    SUBMITTER: "public",
+    FLASHBOTS_STATUS_URL: "https://protect.flashbots.net",
+    PRIVATE_RELAY_HORIZON_BLOCKS: "25",
+    PRIVATE_RECLAIM_MARGIN_BLOCKS: "3",
+    PRIVATE_SUBMIT_TIMEOUT_MS: "8000",
+    PRIVATE_STATUS_TIMEOUT_MS: "2000",
+    MANUAL_INTENT_TTL_MS: "10800000",
+    MANUAL_INTENT_STUCK_MS: "3600000",
+    EXECUTION_MODE: "FIREBLOCKS",
+    DATABASE_URL: "postgres://x",
+    SIGNER_SOURCE: "local",
+    FIREBLOCKS_API_KEY_REF: "FB_API_KEY",
+    FIREBLOCKS_SECRET_KEY_REF: "FB_SECRET",
+    FIREBLOCKS_VAULT_ACCOUNT_ID: "7",
+    FIREBLOCKS_ASSET_ID: "ETH_TEST5",
+  } as const;
+
+  it("carries the vault + secret references, with the defaults applied", () => {
+    expect(buildExecutionConfig(base)).toEqual({
+      mode: "FIREBLOCKS",
+      fireblocks: {
+        backend: "api",
+        baseUrl: "https://api.fireblocks.io",
+        apiKeyRef: "FB_API_KEY",
+        secretKeyRef: "FB_SECRET",
+        vaultAccountId: "7",
+        assetId: "ETH_TEST5",
+        feeLevel: "MEDIUM",
+        pollIntervalMs: 2000,
+        pollTimeoutMs: 120_000,
+      },
+    });
+  });
+
+  it("selects Galaxy's adapter with a single apikey and an explicit host", () => {
+    const { FIREBLOCKS_SECRET_KEY_REF: _unused, ...withoutSecret } = base;
+    expect(
+      buildExecutionConfig({
+        ...withoutSecret,
+        FIREBLOCKS_BACKEND: "galaxy",
+        FIREBLOCKS_BASE_URL: "https://adapter.example.com",
+      })
+    ).toMatchObject({
+      mode: "FIREBLOCKS",
+      fireblocks: { backend: "galaxy", baseUrl: "https://adapter.example.com" },
+    });
+  });
+
+  it.each([
+    ["FIREBLOCKS_API_KEY_REF", { FIREBLOCKS_API_KEY_REF: undefined }],
+    ["FIREBLOCKS_VAULT_ACCOUNT_ID", { FIREBLOCKS_VAULT_ACCOUNT_ID: undefined }],
+    // No default: the asset id selects the network the transaction is broadcast on.
+    ["FIREBLOCKS_ASSET_ID", { FIREBLOCKS_ASSET_ID: undefined }],
+    ["FIREBLOCKS_SECRET_KEY_REF", { FIREBLOCKS_SECRET_KEY_REF: undefined }],
+  ])("rejects the api backend without %s", (needle, extra) => {
+    expect(() => buildExecutionConfig({ ...base, ...extra })).toThrow(needle);
+  });
+
+  it("rejects the galaxy backend without a host, and with an RSA key it must not hold", () => {
+    const galaxy = { ...base, FIREBLOCKS_BACKEND: "galaxy" } as const;
+    expect(() => buildExecutionConfig({ ...galaxy, FIREBLOCKS_SECRET_KEY_REF: undefined })).toThrow(
+      /FIREBLOCKS_BASE_URL/
+    );
+    expect(() =>
+      buildExecutionConfig({ ...galaxy, FIREBLOCKS_BASE_URL: "https://adapter.example.com" })
+    ).toThrow(/FIREBLOCKS_SECRET_KEY_REF/);
+  });
+
+  it("rejects FIREBLOCKS without a persisted store", () => {
+    expect(() => buildExecutionConfig({ ...base, DATABASE_URL: undefined })).toThrow(
+      /DATABASE_URL/
+    );
+  });
+
+  // The reason to use a custodian is that the process holds no key to steal. Booting beside one
+  // would run with a key the operator thinks is gone.
+  it.each([
+    ["SIGNER_SOURCE=aws", { SIGNER_SOURCE: "aws" as const }],
+    ["SIGNER_KEY_REF", { SIGNER_KEY_REF: "LIQUIDATOR_PRIVATE_KEY" }],
+    ["KMS_KEY_ID", { KMS_KEY_ID: "arn:aws:kms:..." }],
+    ["SIGNER_ADDRESS", { SIGNER_ADDRESS: ADDR }],
+  ])("rejects FIREBLOCKS with a configured signer (%s)", (needle, extra) => {
+    expect(() => buildExecutionConfig({ ...base, ...extra })).toThrow(needle);
+  });
+
+  it("rejects FIREBLOCKS when the raw signing key is present in the env", () => {
+    expect(() => buildExecutionConfig(base, { signerKeyPresent: true })).toThrow(
+      /keyless|signing key/
+    );
+  });
+
+  it("rejects a private relay: the custodian broadcasts, so nothing would use it", () => {
+    expect(() => buildExecutionConfig({ ...base, SUBMITTER: "flashbots-protect" })).toThrow(
+      /SUBMITTER=flashbots-protect/
+    );
+  });
+
+  it("lets the Fireblocks variables sit beside AUTO, so one env can flip between the two", () => {
+    expect(buildExecutionConfig({ ...base, EXECUTION_MODE: "AUTO", SIGNER_KEY_REF: "K" })).toEqual({
+      mode: "AUTO",
+      submitter: { mode: "public" },
+    });
+  });
+});
