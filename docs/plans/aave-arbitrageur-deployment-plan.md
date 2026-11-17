@@ -359,3 +359,13 @@ Implications:
 - The executor is a plain EOA, so **dev = `EXECUTION_MODE=AUTO`, `SIGNER_SOURCE=local`**, key in ASM via ESO, with `SIGNER_ADDRESS=0x892f…2c29`. FIREBLOCKS via the UAT adapter becomes a later step that runs the same image with a config swap. Confirm with the user.
 - The executor needs test WBTC before any acquisition.
 - Confirm with Babylon/infra that `0x9898…6e00` is registered as a keeper on the Sepolia VaultSwap the bot will target. The docs list is possibly stale.
+
+## Update 2026-11-17: Babylon docs' Sepolia BTCVaultSwap vs bot v0.4.2
+- The docs page (https://docs.babylonlabs.io/trustless-bitcoin-vault/testnet-info/contract-addresses/) lists BTCVaultSwap `0xCaf3DE0ec631e2DEB3b4A33679037488B545f5a2`.
+- Its implementation is `0xa3fe…8f46`. A selector scan of that bytecode:
+  - **present:** `WBTC()`, `swapWbtcForVault(bytes32,uint256)`, `pauseState()`
+  - **absent:** `EXIT_BTC()`, `swapExitBtcForVault`, `swapExitBtcForVaultOnBehalf`
+- `pauseState()` = 2 (Paused).
+- Bot v0.4.2 calls only the absent functions, so it cannot run against this deployment as published. Ask Babylon:
+  - Is there a newer v0.5.0 Sepolia deployment?
+  - Or is an upgrade of `0xCaf3…` pending?
