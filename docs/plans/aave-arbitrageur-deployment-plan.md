@@ -369,3 +369,41 @@ Implications:
 - Bot v0.4.2 calls only the absent functions, so it cannot run against this deployment as published. Ask Babylon:
   - Is there a newer v0.5.0 Sepolia deployment?
   - Or is an upgrade of `0xCaf3…` pending?
+
+## Update 2026-11-17: current Sepolia BTCVaultSwap found (Q1/B2 resolved for Sepolia)
+Source: `babylonlabs-io/babylon-toolkit` `services/vault/networks/testnet.json` (profile `testnet`, signet, chain 11155111, indexer `…-t3.testnet.babylonlabs.io`), plus the config's `LLPRegistered` logs. Verified directly over JSON-RPC at Sepolia block ~12,156,879.
+
+| Contract | Address |
+|---|---|
+| **BTCVaultSwap (proxy)** | **`0x61cB6Da9380b624FD4133fa42bC3d150a060bDf6`** (impl `0x3845e6b693c66dc1c227a9f0a45c281aa8ae5620`) |
+| exit token (`EXIT_BTC()`) = `WBTC_ADDRESS` | `0x504579d0424b7b7cb4b17e16626f6a2f67bca054` |
+| AaveAdapter (`ADAPTER()`) | `0x6A785E8fdF251E2aA758a6E1841e1470074f46BF` |
+| AaveAdapterConfig | `0x483b7314027044B94fCC3189ef42cC1E9FFb5ee2` (`isRegisteredLLP` = `llpEnabled` = 1) |
+| ApplicationRegistry (`APP_REGISTRY()`) | `0xFa218a0BD0A684BFc3E9E8A399F365b6a0A64423` |
+| BTCVaultRegistry | `0x584104DB602B78ae4E8385748c1234de091569da` |
+| Deploy | tx `0xc4aa52e4…9b03`, **block 11926764** (2026-10-16), so `START_BLOCK=11926764` |
+
+Checks:
+- `EXIT_BTC()` returns the test WBTC. The implementation contains `swapExitBtcForVault` (`3e2cd070`), `…OnBehalf` (`f00d9729`) and `EXIT_BTC` (`2aee9be6`).
+- `isPaused()` = `isFrozen()` = false.
+- `minimumProfitThresholdBps` = 30, `sellDiscountBps` = 200.
+- **Keeper `0x9898…6e00` is registered:** `ApplicationRegistry.isVaultKeeper(adapter 0x6A78…, keeper)` = true. BTC key `0xfe2b360932d2f606eb57f32d502c37da1e4cd678923892ae27baadebe5f72b87`; not blocklisted.
+
+Other stacks seen (do NOT use):
+- Docs stack, old ABI: `0xCaf3…` (paused) and `0xf5Be…` (frozen).
+- Brand-new stack deployed 2026-11-17 ~14:14 UTC: VaultSwap proxy `0xF47a1f8D7c08C5DDc07309826FFeA8c9C782efD9`, adapter `0xBfbb…Ca8f`, registry `0x18b2…3fe5`. Our keeper is **not** registered there. Possibly a new Babylon redeploy (v1.x / bot v0.4.3?); ask Babylon before switching.
+- Staging profile VaultSwap: `0x29A42D733a7ed5c31E590A70da10264638412268`.
+
+Dev indexer env:
+```
+CHAIN_ID=11155111
+VAULT_SWAP_ADDRESS=0x61cB6Da9380b624FD4133fa42bC3d150a060bDf6
+START_BLOCK=11926764
+```
+
+Dev bot env:
+```
+VAULT_SWAP_ADDRESS=0x61cB6Da9380b624FD4133fa42bC3d150a060bDf6
+WBTC_ADDRESS=0x504579d0424b7b7cb4b17e16626f6a2f67bca054
+VAULT_KEEPER_ADDRESS=0x989871CEff65aF39208CeD99Ff57C99B27176e00
+```
