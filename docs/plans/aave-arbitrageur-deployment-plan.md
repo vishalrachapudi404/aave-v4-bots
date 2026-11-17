@@ -346,3 +346,16 @@ Runbooks to write with the prod PR:
 - Set `nodeSelector: eks.amazonaws.com/nodegroup: workers` on both pods: the dask groups are untainted, and kuration pods already appear spread across non-worker nodes.
 - Dev has Zesty: live kuration requests are 10m vs 100m in git, so Zesty appears to rewrite requests despite its README. Exclude `aave-arbitrageur` in Zesty if fixed requests matter.
 - Do not copy kuration's LimitRange (its 1-CPU container max blocks the indexer limit). Write a namespace quota sized from the table above.
+
+## Update 2026-11-17: Sepolia identities (from user; testnet only)
+
+| Role | Value | On-chain check (Sepolia, 2026-11-17) |
+|---|---|---|
+| `VAULT_KEEPER_ADDRESS` (keeper roster ETH address; user believes Sepolia) | `0x989871CEff65aF39208CeD99Ff57C99B27176e00` | EOA, ~0.50 ETH, nonce 2. **Not in Babylon's published keeper list** (RockX, Babylon 0, Babylon 1): https://docs.babylonlabs.io/trustless-bitcoin-vault/testnet-info/contract-addresses/#keepers-aave-v4-integration |
+| Bot executor (holds WBTC, pays gas) | `0x892f96532Ba15794FC3af586eFdb115Fa8F22c29` | EOA, ~0.10 ETH, **0 test WBTC** (`0x5045…4054`), nonce 1 |
+| BTC payout (Signet) | `tb1qv0k0yf3x9xrwz0va3st44lx2lqvxg5hzwgzg2e` (scriptPubKey `001463ecf226262986e13d9d8c175afccaf8186452e2`) | set by the infra team via `vaultd vk set-payout-script` |
+
+Implications:
+- The executor is a plain EOA, so **dev = `EXECUTION_MODE=AUTO`, `SIGNER_SOURCE=local`**, key in ASM via ESO, with `SIGNER_ADDRESS=0x892f…2c29`. FIREBLOCKS via the UAT adapter becomes a later step that runs the same image with a config swap. Confirm with the user.
+- The executor needs test WBTC before any acquisition.
+- Confirm with Babylon/infra that `0x9898…6e00` is registered as a keeper on the Sepolia VaultSwap the bot will target. The docs list is possibly stale.
