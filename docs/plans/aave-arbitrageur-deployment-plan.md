@@ -407,3 +407,10 @@ VAULT_SWAP_ADDRESS=0x61cB6Da9380b624FD4133fa42bC3d150a060bDf6
 WBTC_ADDRESS=0x504579d0424b7b7cb4b17e16626f6a2f67bca054
 VAULT_KEEPER_ADDRESS=0x989871CEff65aF39208CeD99Ff57C99B27176e00
 ```
+
+## Update 2026-11-18: Babylon confirmed the Sepolia target
+Babylon: "the docs still point to an older testnet. you're registered on the new testnet, and the new swap spoke address is 0x61cB6Da9380b624FD4133fa42bC3d150a060bDf6."
+- **Sepolia `VAULT_SWAP_ADDRESS = 0x61cB6Da9380b624FD4133fa42bC3d150a060bDf6` is confirmed** (Q1/B2 closed for Sepolia). Keeper registration was confirmed by Babylon and by `isVaultKeeper` = true.
+- Executor `0x892f…2c29` was funded with 10 test WBTC (`0x5045…4054`) on 2026-11-18.
+- The 2026-11-17 stack (`0xF47a…`) was not mentioned by Babylon. Not used; revisit only if Babylon announces a migration.
+- Remaining external item: mainnet addresses and deploy block (for the prod story).
