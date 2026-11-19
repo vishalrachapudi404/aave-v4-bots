@@ -414,3 +414,47 @@ Babylon: "the docs still point to an older testnet. you're registered on the new
 - Executor `0x892f…2c29` was funded with 10 test WBTC (`0x5045…4054`) on 2026-11-18.
 - The 2026-11-17 stack (`0xF47a…`) was not mentioned by Babylon. Not used; revisit only if Babylon announces a migration.
 - Remaining external item: mainnet addresses and deploy block (for the prod story).
+
+## Update 2026-11-19: rollout phases (local → dev → prod)
+
+### Phase 0: local Sepolia (LIVE since 2026-11-19)
+- docker compose on the laptop, run with `./local-run.sh` (git-excluded), using the prebuilt OCT-140 images and the Zscaler CA override.
+- **Indexer:** backfilled from 11926764 and synced to head.
+- **Bot:** AUTO, signer `0x892f…2c29` holding 10 test WBTC, keeper `0x9898…6e00`, RPC `solitary-still-wildflower.ethereum-sepolia.quiknode.pro` (BCE-13906).
+- Keep it running until the dev cutover.
+
+### Phase 1: dev (gdtcore-use1-dev, Sepolia), story OCT-137
+
+| Order | Step | PR / owner |
+|---|---|---|
+| 1 | ASM secrets `dev/on-chain-trading/aave-arbitrageur/{bot,indexer,control}` (OCT-145) | user (values from the local `.env` files) |
+| 2 | terraform: namespace, RBAC, ESO IRSA; Atlantis apply dev (OCT-142) | GalaxyDigitalLLC/terraform#6601 |
+| 3 | core-infra: `arbitrageur_bot` / `arbitrageur_indexer` logins (OCT-143) | GalaxyDigitalLLC/core-infra#6820 |
+| 4 | flyway V10: schemas and grants in `trading` (OCT-144). Needs step 3. If `GRANT CREATE ON DATABASE` is refused, a DBA runs that line | GalaxyDigitalLLC/flyway#5318 |
+| 5 | monorepo project + root `build job:` dispatch; the first Jenkins run pushes the images (OCT-140/141) | GalaxyDigitalLLC/on-chain-trading-projects#8 |
+| 6 | flux dev manifests with the real image tag (OCT-146), currently draft | GalaxyDigitalLLC/on-chain-trading-flux#88 |
+| 7 | **Cutover**: wait for the dev indexer `/ready`, then `./local-run.sh down` (keeps the local volume), then confirm the dev bot is healthy and polling | us |
+| 8 | Datadog monitors after the first scrape (OCT-147), currently draft | GalaxyDigitalLLC/datadog-config#437 |
+| 9 | Babylon liquidates a test position; the dev bot acquires it and it redeems to keeper `0x9898…` (OCT-148) | Babylon + us |
+| 10 | Runbooks (OCT-149) | us |
+
+**Cutover rule: one signer, one bot.** Local and dev share signer `0x892f…`, and two processes on one key collide on nonces.
+- Stop the local bot after the dev indexer is ready and before the dev bot trades.
+- If Babylon liquidates before the cutover, the local bot buys it. That is valid, but it is not the dev proof, so schedule the test after the cutover.
+
+### Phase 2: prod (gdtcore-use1-prod, mainnet), story OCT-150
+The image and code path stay the same. Execution moves from the hot wallet to Fireblocks via Galaxy's prod adapter: `EXECUTION_MODE=FIREBLOCKS`, `FIREBLOCKS_BACKEND=galaxy`, inventory funding, config-only. There is no private key in any secret.
+
+Prod also needs:
+- **Babylon:** mainnet addresses and deploy block.
+- **Keeper:** registered on mainnet, with its address.
+- **Custody:** a dedicated API user, a vault, TAP rules, and an OTA-destination test.
+- **RPC:** mainnet (BCE-13922), with separate indexer and bot keys.
+- **Desk:** parameter values.
+- **SRE:** the Datadog prod log `@tier` change.
+- **terraform:** prod workspace apply.
+- **core-infra:** `prod.tf` logins.
+- **flyway:** migration in the `on-chain-trading` module.
+- **flux:** a prod folder with `RISK_START_HALTED` for the first boot, `RISK_EXPECTED_CODE_HASHES` pinned, and prod sizing.
+- **Datadog:** a prod entry plus a vault balance monitor.
+- **Fork decision:** on the code-hash guard (EIP-1967 slot) and `approve(maxUint256)`.
