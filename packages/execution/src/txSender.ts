@@ -188,13 +188,30 @@ function applyPriorityFeeFloor(
 }
 
 /**
+ * Headroom added on top of the node's gas estimate, in percent.
+ *
+ * `prepareTransactionRequest` signs with exactly `eth_estimateGas`. That estimate is taken against
+ * the latest block, and a swap's cost can rise by the time it is included. Seen on Sepolia
+ * 2026-11-20: the first `swapExitBtcForVaultOnBehalf` after a vault entered escrow used 619k of a
+ * 650k estimate and ran out of gas inside BTCVaultRegistry (EIP-150 forwards only 63/64 to the
+ * inner call); the retry, a few blocks later, used 592k. Only gas actually used is paid, so the
+ * headroom costs nothing on success; it only raises the balance the node requires up front.
+ */
+export const GAS_LIMIT_HEADROOM_PCT = 25n;
+
+/** The estimate plus `GAS_LIMIT_HEADROOM_PCT`, rounded up. */
+export function withGasHeadroom(gas: bigint): bigint {
+  return (gas * (100n + GAS_LIMIT_HEADROOM_PCT) + 99n) / 100n;
+}
+
+/**
  * Sign `call` without broadcasting it. The hash is derived from the signed payload (keccak256
  * of the serialized tx) — the same hash the node will report — so it is durable-recordable
  * before the tx exists on chain.
  *
  * `minPriorityFeeWei` is the floor the tip is raised to when the node prices it lower; see
  * `applyPriorityFeeFloor`. Omitted ⇒ the node's estimate stands, which is right for the public
- * mempool.
+ * mempool. The gas limit always gets `GAS_LIMIT_HEADROOM_PCT` on top of the node's estimate.
  */
 export async function signContractCall(
   walletClient: WalletClient<Transport, Chain, Account>,
@@ -212,6 +229,7 @@ export async function signContractCall(
     account: walletClient.account,
     chain: walletClient.chain,
   });
+  if (request.gas !== undefined) request.gas = withGasHeadroom(request.gas);
   if (minPriorityFeeWei !== undefined) applyPriorityFeeFloor(request, minPriorityFeeWei);
   const serialized = await walletClient.signTransaction(
     request as Parameters<typeof walletClient.signTransaction>[0]

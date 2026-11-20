@@ -263,6 +263,24 @@ describe("@repo/execution", () => {
     });
   });
 
+  describe("gas headroom", () => {
+    it("signs with the node's estimate plus 25%, rounded up", async () => {
+      // 650_495 is the estimate that ran out of gas inside BTCVaultRegistry on Sepolia.
+      const { walletClient, publicClient } = txClients({
+        fees: { maxFeePerGas: 101n, maxPriorityFeePerGas: 1n, gas: 650_495n },
+      });
+      const sender = createTxSender(
+        publicClient as unknown as PublicClientArg,
+        walletClient as unknown as WalletClientArg
+      );
+
+      await sender.send(CALL);
+
+      const signed = walletClient.signTransaction.mock.calls[0][0] as { gas: bigint };
+      expect(signed.gas).toBe(813_119n); // ceil(650_495 * 1.25)
+    });
+  });
+
   // The node prices a transaction for the public mempool. A privately-submitted one is not in that
   // market at all: it is offered to builders, never pooled, and never re-priced — so an under-tipped
   // one is not slow, it never lands, and the fence re-drives it at the same price. The floor is the
